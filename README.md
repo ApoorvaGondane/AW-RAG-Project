@@ -51,6 +51,7 @@ uvicorn main:combined_app --host 0.0.0.0 --port 8000 --reload
 ```
 
 Frontend: Open index.html in your browser to access the LiveSpeak dashboard.
+
 Port Note: Mac users may need to use --port 8001 if port 8000 is occupied by AirPlay.
 
 👥 Research Team
@@ -61,4 +62,5 @@ Krishnanshu Ramjiwala (D008): Lead Developer & System Integration.
 Gaurav Ranadive (D021): Research Analyst & Performance Optimization.
 
 Mentor: Prof. Archana Lakhe
+
 HOD: Dr. Siba Panda
