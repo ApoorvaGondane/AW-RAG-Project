@@ -1,0 +1,6 @@
+__pycache__/
+venv/
+.env
+db/                
+raw_lecture/*.wav  
+emotion_model_weights/

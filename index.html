@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>LiveSpeak</title>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <style>
+        body { font-family: sans-serif; padding: 20px; line-height: 1.6; }
+        .box { border: 1px solid #ccc; padding: 15px; margin-bottom: 10px; border-radius: 8px; }
+        button { cursor: pointer; padding: 8px 15px; }
+    </style>
+</head>
+<body>
+    <h1>LiveSpeak</h1>
+    <h2>A complete architecture for live captioning</h2>
+    <div class="box">
+        <h3>1. Record Lecture</h3>
+        <button id="start">Start Recording</button>
+        <button id="stop" disabled>Stop Recording</button>
+        <p id="status">Status: Idle</p>
+    </div>
+    <div class="upload-container">
+        <input type="file" id="audioUpload" accept=".wav,.mp3,.webm,.m4a,audio/mpeg,audio/wav,audio/webm" style="display:none">
+        <button onclick="document.getElementById('audioUpload').click()" class="btn-upload">
+            📁 Upload Lecture File
+        </button>
+        <p id="uploadStatus"></p>
+    </div>
+    <div class="box">
+        <h3>2. Accessibility Settings</h3>
+        <label>
+            <input type="checkbox" id="ttsToggle"> Enable Text-to-Speech (Read answers aloud)
+        </label>
+        
+    </div>
+
+    <div class="box">
+            <h3>3. Translation Settings</h3>
+            <label for="langSelect">Target Language:</label>
+            <select id="langSelect" onchange="updateLanguage()">
+                <option value="en">English (Original)</option>
+                <option value="hi">Hindi</option>
+                <option value="es">Spanish</option>
+                <option value="fr">French</option>
+                <option value="de">German</option>
+            </select>
+    </div>
+
+    <div class="box">
+        <h3>4. Ask a Question</h3>
+        <input type="text" id="query" placeholder="What was the lecture about?" style="width: 70%;">
+        <button onclick="askBot()">Ask</button>
+        <div id="response" style="margin-top: 10px; font-weight: bold;"></div>
+    </div>
+
+    <div class="box">
+    <h3>Live Transcript</h3>
+    <div id="transcript" style="height: 200px; overflow-y: scroll; border: 1px inset #eee; padding: 10px;">
+        </div>
+    </div>
+
+    <script>
+
+
+
+        const socket = io("http://localhost:8000");
+        let recorder;
+        let ttsEnabled = false;
+        // 1. Define a variable to track the last message (place this at the top of your script)
+        let lastReceivedText = "";
+        // TTS Toggle logic
+        document.getElementById('ttsToggle').onchange = (e) => ttsEnabled = e.target.checked;
+
+        function speak(text) {
+            if (!ttsEnabled) return;
+            window.speechSynthesis.cancel();
+            window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+        }
+
+        // Audio Recording logic
+        document.getElementById('start').onclick = async () => {
+            socket.emit('reset_buffer'); // 👈 Add this line first!
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            recorder = new MediaRecorder(stream);
+            recorder.ondataavailable = (e) => {
+                if (e.data.size > 0) socket.emit('audio-chunk', e.data);
+            };
+            recorder.start(1000); // 1-second chunks
+            document.getElementById('start').disabled = true;
+            document.getElementById('stop').disabled = false;
+            document.getElementById('status').innerText = "Status: Recording and Streaming...";
+        };
+
+        document.getElementById('stop').onclick = () => {
+        document.getElementById('status').innerText = "Status: Finishing up...";
+        
+        // 1. Stop the recorder first
+        recorder.stop();
+        
+        // 2. Give the browser 500ms to send the very last 'ondataavailable' chunk
+        setTimeout(() => {
+            socket.emit('flush_buffer');
+            document.getElementById('start').disabled = false;
+            document.getElementById('stop').disabled = true;
+            document.getElementById('status').innerText = "Status: Stopped.";
+        }, 500);
+    };
+
+        
+        const fileInput = document.getElementById('audioUpload');
+        const status = document.getElementById('uploadStatus');
+
+        fileInput.addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            status.innerText = "Reading file...";
+
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                const arrayBuffer = event.target.result;
+                
+                // Emit the entire file buffer to the backend
+                status.innerText = "Uploading to AW-RAG Engine...";
+                socket.emit('upload-audio-file', {
+                    fileName: file.name,
+                    data: arrayBuffer
+                });
+            };
+            
+            reader.readAsArrayBuffer(file);
+        });
+
+        // Listen for completion
+        socket.on('processing-complete', (data) => {
+            status.innerText = "✅ " + data.msg;
+        });
+
+
+        // RAG Query logic
+        async function askBot() {
+            const query = document.getElementById('query').value;
+            const res = await fetch(`http://localhost:8000/ask?q=${encodeURIComponent(query)}`);
+            const data = await res.json();
+            document.getElementById('response').innerText = "Bot: " + data.answer;
+            speak(data.answer);
+        }
+
+        // RAG Query logic
+        async function askBot() {
+            const query = document.getElementById('query').value;
+            const res = await fetch(`http://localhost:8000/ask?q=${encodeURIComponent(query)}`);
+            const data = await res.json();
+            document.getElementById('response').innerText = "Bot: " + data.answer;
+            speak(data.answer);
+        }
+
+        function updateLanguage() {
+        const lang = document.getElementById('langSelect').value;
+        socket.emit('set_language', { language: lang });
+        }
+
+        // --- SINGLE UNIFIED LISTENER ---
+        socket.on('caption_update', (data) => {
+            console.log("New Caption Received:", data);
+            
+            const transcriptDiv = document.getElementById('transcript');
+            // Normalize for comparison
+            const currentText = data.text.trim().toLowerCase();
+            
+            // THE GUARD: Only allow new, unique text
+            if (currentText === lastReceivedText || currentText === "") {
+                console.log("🚫 Duplicate blocked:", currentText);
+                return;
+            }
+
+            // Update memory for next comparison
+            lastReceivedText = currentText;
+
+            // Create the UI element
+            const newLine = document.createElement('p');
+            newLine.style.margin = "8px 0";
+            //newLine.innerHTML = `<strong>${data.speaker}:</strong> ${data.text} <small style="color:gray">(${data.source})</small>`;
+            // Create a visual indicator for weight
+            const weightBadge = data.weight > 1.0 
+                ? `<span style="color: gold; font-weight: bold;">[Priority: ${data.weight}]</span>` 
+                : `<span>[Standard]</span>`;
+            // We add the emotion in brackets next to the speaker name
+            newLine.innerHTML = `
+                <strong>${data.speaker} (${data.emotion}):</strong> 
+                ${data.text}${weightBadge} <br>
+                <span style="color: blue;">📝 ${data.translated_text}</span>
+                <small style="color:gray">(${data.source})</small>
+            `;
+            transcriptDiv.appendChild(newLine);
+            transcriptDiv.scrollTop = transcriptDiv.scrollHeight; // Auto-scroll
+        });
+    </script>
+</body>
+</html>
